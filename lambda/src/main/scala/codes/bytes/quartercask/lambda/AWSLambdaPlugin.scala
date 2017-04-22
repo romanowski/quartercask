@@ -21,8 +21,10 @@ package codes.bytes.quartercask.lambda
 
 import codes.bytes.quartercask._
 import codes.bytes.quartercask.s3.AWSS3
+import sbt.Keys.streams
 import sbt._
-import scala.util.{Either, Failure, Success}
+
+import scala.util.{Failure, Success}
 
 
 object AWSLambdaPlugin extends AutoPlugin {
@@ -68,7 +70,7 @@ object AWSLambdaPlugin extends AutoPlugin {
       roleArn = roleArn.value,
       timeout = awsLambdaTimeout.value,
       memory = awsLambdaMemory.value
-    ),
+    )(streams.value.log),
     s3Bucket := None,
     lambdaName := Some(sbt.Keys.name.value),
     handlerName := None,
@@ -90,29 +92,27 @@ object AWSLambdaPlugin extends AutoPlugin {
     lambdaHandlers: Seq[(String, String)],
     roleArn: Option[String],
     timeout: Option[Int],
-    memory: Option[Int]): Map[String, LambdaARN] = {
+    memory: Option[Int])(implicit log: Logger): Map[String, LambdaARN] = {
     val resolvedRegion = resolveRegion(region)
+    val awsS3 = new AWSS3(resolvedRegion)
+    val awsLambda = new AWSLambdaClient(resolvedRegion)
+
     val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
-    val resolvedRoleName = resolveRoleARN(roleArn)
-    val resolvedBucketId = resolveBucketId(s3Bucket)
+    val resolvedRoleName = resolveRoleARN(roleArn, resolvedRegion)
+    val resolvedBucketId = resolveBucketId(awsS3, s3Bucket)
     val resolvedS3KeyPrefix = resolveS3KeyPrefix(s3KeyPrefix)
     val resolvedTimeout = resolveTimeout(timeout)
     val resolvedMemory = resolveMemory(memory)
 
-    AWSS3.pushJarToS3(jar, resolvedBucketId, resolvedS3KeyPrefix) match {
+    awsS3.pushJarToS3(jar, resolvedBucketId, resolvedS3KeyPrefix) match {
       case Success(s3Key) =>
         for ((resolvedLambdaName, resolvedHandlerName) <- resolvedLambdaHandlers) yield {
-          AWSLambda
+          awsLambda
             .deployLambda(
-              resolvedRegion,
-              jar,
-              resolvedLambdaName,
-              resolvedHandlerName,
+              LambdaParams(resolvedLambdaName, resolvedHandlerName, resolvedTimeout, resolvedMemory),
               resolvedRoleName,
-              resolvedBucketId,
-              s3Key,
-              resolvedTimeout,
-              resolvedMemory) match {
+              S3Params(resolvedBucketId, s3Key)
+            ) match {
             case Success(Left(createFunctionCodeResult)) =>
               resolvedLambdaName.value -> LambdaARN(createFunctionCodeResult.getFunctionArn)
             case Success(Right(updateFunctionCodeResult)) =>
@@ -142,9 +142,9 @@ object AWSLambdaPlugin extends AutoPlugin {
       promptUserForRegion()
 
 
-  private def resolveBucketId(sbtSettingValueOpt: Option[String]): S3BucketId =
+  private def resolveBucketId(awsS3: AWSS3, sbtSettingValueOpt: Option[String])(implicit log: Logger): S3BucketId =
     sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.BucketId) map S3BucketId getOrElse
-      promptUserForS3BucketId()
+      promptUserForS3BucketId(awsS3)
 
 
   private def resolveS3KeyPrefix(sbtSettingValueOpt: Option[String]): String =
@@ -168,9 +168,9 @@ object AWSLambdaPlugin extends AutoPlugin {
   }
 
 
-  private def resolveRoleARN(sbtSettingValueOpt: Option[String]): RoleARN =
+  private def resolveRoleARN(sbtSettingValueOpt: Option[String], region: Region): RoleARN =
     sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.RoleARN) map RoleARN getOrElse
-      promptUserForRoleARN()
+      promptUserForRoleARN(region)
 
 
   private def resolveTimeout(sbtSettingValueOpt: Option[Int]): Option[Timeout] =
@@ -193,7 +193,7 @@ object AWSLambdaPlugin extends AutoPlugin {
   }
 
 
-  private def promptUserForS3BucketId(): S3BucketId = {
+  private def promptUserForS3BucketId(awsS3: AWSS3)(implicit log: Logger): S3BucketId = {
     val inputValue = readInput(
       s"Enter the AWS S3 bucket where the lambda jar will be stored. (You also could have set the" +
         s" environment variable: ${
@@ -202,20 +202,20 @@ object AWSLambdaPlugin extends AutoPlugin {
         } or the sbt setting: s3Bucket)")
     val bucketId = S3BucketId(inputValue)
 
-    AWSS3.getBucket(bucketId) map (_ => bucketId) getOrElse {
+    awsS3.getBucket(bucketId) map (_ => bucketId) getOrElse {
       val createBucket = readInput(s"Bucket $inputValue does not exist. Create it now? (y/n)")
 
       if (createBucket == "y") {
-        AWSS3.createBucket(bucketId) match {
+        awsS3.createBucket(bucketId) match {
           case Success(createdBucketId) =>
             createdBucketId
           case Failure(th) =>
-            println(s"Failed to create S3 bucket: ${th.getLocalizedMessage}")
-            promptUserForS3BucketId()
+            log.error(s"Failed to create S3 bucket: ${th.getMessage}")
+            promptUserForS3BucketId(awsS3)
         }
       }
       else {
-        promptUserForS3BucketId()
+        promptUserForS3BucketId(awsS3)
       }
     }
   }
@@ -238,12 +238,14 @@ object AWSLambdaPlugin extends AutoPlugin {
         } or the sbt setting: handlerName)")
 
 
-  private def promptUserForRoleARN(): RoleARN = {
-    AWSIAM.basicLambdaRole() match {
+  private def promptUserForRoleARN(region: Region): RoleARN = {
+    val awsIam = new AWSIAM(region)
+
+    awsIam.basicLambdaRole match {
       case Some(basicRole) =>
         val reuseBasicRole = readInput(
           s"IAM role '${
-            AWSIAM
+            awsIam
               .BasicLambdaRoleName
           }' already exists. Reuse this role? (y/n)")
 
@@ -259,12 +261,12 @@ object AWSLambdaPlugin extends AutoPlugin {
             s"yet. Create this role now? (y/n)")
 
         if (createDefaultRole == "y") {
-          AWSIAM.createBasicLambdaRole() match {
+          awsIam.createBasicLambdaRole match {
             case Success(createdRole) =>
               createdRole
             case Failure(th) =>
               println(s"Failed to create role: ${th.getLocalizedMessage}")
-              promptUserForRoleARN()
+              promptUserForRoleARN(region)
           }
         } else {
           readRoleARN()
