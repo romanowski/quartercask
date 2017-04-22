@@ -20,16 +20,16 @@ package codes.bytes.quartercask.s3
 
 import java.io.File
 
-import codes.bytes.quartercask.{AWSCredentials, S3BucketId, S3Key}
+import codes.bytes.quartercask.{AWSCredentials, Region, S3BucketId, S3Key}
 import com.amazonaws.event.{ProgressEvent, ProgressEventType, SyncProgressListener}
-import com.amazonaws.services.s3.AmazonS3Client
+import com.amazonaws.services.s3.{AmazonS3, AmazonS3ClientBuilder}
 import com.amazonaws.services.s3.model.{Bucket, CannedAccessControlList, PutObjectRequest}
 import com.amazonaws.{AmazonClientException, AmazonServiceException, AmazonWebServiceRequest}
 
 import scala.util.{Failure, Success, Try}
 
-private[quartercask] object AWSS3 {
-  private lazy val client = new AmazonS3Client(AWSCredentials.provider)
+private[quartercask] class AWSS3(region: Region) {
+  private lazy val client = buildClient
 
   def pushJarToS3(jar: File, bucketId: S3BucketId, s3KeyPrefix: String): Try[S3Key] = {
     try {
@@ -37,10 +37,7 @@ private[quartercask] object AWSS3 {
       val objectRequest = new PutObjectRequest(bucketId.value, key, jar)
       objectRequest.setCannedAcl(CannedAccessControlList.AuthenticatedRead)
 
-
-      val objectMetadata= client.getObjectMetadata(bucketId.value, key)
-
-      addProgressListener(objectRequest, objectMetadata.getContentLength, key)
+      addProgressListener(objectRequest, jar.length(), key)
 
       client.putObject(objectRequest)
 
@@ -48,6 +45,7 @@ private[quartercask] object AWSS3 {
     } catch {
       case ex @ (_ : AmazonClientException |
                  _ : AmazonServiceException) =>
+        ex.printStackTrace()
         Failure(ex)
     }
   }
@@ -116,6 +114,14 @@ https://github.com/sbt/sbt-s3/blob/master/src/main/scala/S3Plugin.scala
   def prettyLastMsg(verb:String, objects:Seq[String], preposition:String, bucket:String) =
     if (objects.length == 1) s"$verb '${objects.head}' $preposition the S3 bucket '$bucket'."
     else                     s"$verb ${objects.length} objects $preposition the S3 bucket '$bucket'."
+
+  private def buildClient: AmazonS3 = {
+    val builder = AmazonS3ClientBuilder
+      .standard()
+      .withCredentials(AWSCredentials.provider)
+    builder.setRegion(region.value)
+    builder.build()
+  }
 }
 
 

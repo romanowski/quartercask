@@ -1,6 +1,6 @@
 val projectVersion          = "0.1-SNAPSHOT"
 val projectOrg              = "codes.bytes"
-val awsSdkVersion           = "1.11.37"
+val awsSdkVersion           = "1.11.119"
 val alexaSkillsVersion      = "1.1.2"
 val json4sVersion           = "3.4.0"
 
@@ -20,7 +20,7 @@ lazy val commonSettings = Seq(
     "-language:_"
   ),
   fork in (Test, run) := true,
-  addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "0.14.3")
+  addSbtPlugin("com.eed3si9n" % "sbt-assembly" % "0.14.4")
 )
 
 
