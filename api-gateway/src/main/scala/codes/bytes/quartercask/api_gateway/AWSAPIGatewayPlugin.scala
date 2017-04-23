@@ -32,8 +32,6 @@ object AWSAPIGatewayPlugin extends AutoPlugin {
     val apiDescription = settingKey[Option[String]]("An optional description for the deployed API")
     val queryStringKeys = settingKey[Map[String, Boolean]]("[validation] An optional mapping of valid querystring parameters, with a boolean indicating if caching should be used or not for each value.")
     val httpRequestHeaders = settingKey[Map[String, Boolean]]("[validation] An optional mapping of valid HTTP Request Headers, with a boolean indicating if caching should be used or not for each value.")
-
-
   }
 
 }

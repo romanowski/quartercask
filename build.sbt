@@ -30,7 +30,7 @@ lazy val root = (project in file(".")).
     name := "sbt-quartercask"
   ).
   aggregate(
-    lambda, util, apiGateway, iot, alexaSkills
+    lambda, util, apiGateway, alexaSkills
   )
 
 lazy val lambda = (project in file("lambda")).
@@ -62,17 +62,6 @@ lazy val apiGateway = (project in file("api-gateway")).
     sbtPlugin := true,
     libraryDependencies ++= Seq(
       "com.amazonaws"  % "aws-java-sdk-api-gateway" % awsSdkVersion
-    )
-  ).
-  dependsOn(util)
-
-lazy val iot = (project in file("iot")).
-  settings(commonSettings: _*).
-  settings(
-    name := "sbt-quartercask-iot",
-    sbtPlugin := true,
-    libraryDependencies ++= Seq(
-      "com.amazonaws"  % "aws-java-sdk-iot" % awsSdkVersion
     )
   ).
   dependsOn(util)
