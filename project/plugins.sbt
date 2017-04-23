@@ -1,1 +1,3 @@
-resolvers += Resolver.url("bintray-sbt-plugins", url("http://dl.bintray.com/sbt/sbt-plugin-releases"))(Resolver.ivyStylePatterns)
+addSbtPlugin("me.lessis" % "bintray-sbt" % "0.3.0")
+
+resolvers += Resolver.jcenterRepo
