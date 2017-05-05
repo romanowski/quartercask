@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/pdolega/quartercask.svg)](https://travis-ci.org/pdolega/quartercask)
+[![Build Status](https://travis-ci.org/quaich-serverless/quartercask.svg)](https://travis-ci.org/quaich-serverless/quartercask)
 
 # quartercask
 SBT Plugin for advanced AWS Lambda Deployment and Integration
