@@ -22,53 +22,64 @@ import java.io.File
 
 import codes.bytes.quartercask.{AWSCredentials, Region, S3BucketId, S3Key}
 import com.amazonaws.event.{ProgressEvent, ProgressEventType, SyncProgressListener}
+import com.amazonaws.services.s3.model._
 import com.amazonaws.services.s3.{AmazonS3, AmazonS3ClientBuilder}
-import com.amazonaws.services.s3.model.{Bucket, CannedAccessControlList, PutObjectRequest}
-import com.amazonaws.{AmazonClientException, AmazonServiceException, AmazonWebServiceRequest}
+import com.amazonaws.{AmazonServiceException, AmazonWebServiceRequest}
+import sbt.Logger
 
-import scala.util.{Failure, Success, Try}
+import scala.util.{Failure, Try}
+
+private[s3] object AWSS3 {
+  val NoSuchBucketCode = "NoSuchBucket"
+}
 
 private[quartercask] class AWSS3(region: Region) {
   private lazy val client = buildClient
 
-  def pushJarToS3(jar: File, bucketId: S3BucketId, s3KeyPrefix: String): Try[S3Key] = {
-    try {
-      val key = s3KeyPrefix + jar.getName
-      val objectRequest = new PutObjectRequest(bucketId.value, key, jar)
-      objectRequest.setCannedAcl(CannedAccessControlList.AuthenticatedRead)
+  def pushJarToS3(jar: File, bucketId: S3BucketId, s3KeyPrefix: String, createAutomatically: Boolean)(implicit log: Logger): Try[S3Key] = for {
+    _ <- checkBucket(bucketId, createAutomatically)
+    s3Key <- pushLambdaJarToBucket (jar, bucketId, s3KeyPrefix + jar.getName)
+  } yield {
+    s3Key
+  }
 
-      addProgressListener(objectRequest, jar.length(), key)
+  private def pushLambdaJarToBucket(jar: File, bucketId: S3BucketId, key: String)(implicit log: Logger): Try[S3Key] = Try {
+    val objectRequest = new PutObjectRequest(bucketId.value, key, jar)
+    objectRequest.setCannedAcl(CannedAccessControlList.AuthenticatedRead)
+    addProgressListener(objectRequest, jar.length(), key)
+    client.putObject(objectRequest)
+    S3Key(key)
+  }
 
-      client.putObject(objectRequest)
-
-      Success(S3Key(key))
-    } catch {
-      case ex @ (_ : AmazonClientException |
-                 _ : AmazonServiceException) =>
-        ex.printStackTrace()
-        Failure(ex)
+  private def checkBucket(bucketId: S3BucketId, createAutomatically: Boolean)(implicit log: Logger): Try[Unit] = {
+    Try {
+      client.listObjects(new ListObjectsRequest(bucketId.value, null, null, null, 0))
+      log.info(s"Bucket ${bucketId.value} exists and is accessible")
+    }.recoverWith {
+      case e: AmazonServiceException if e.getErrorCode == AWSS3.NoSuchBucketCode =>
+        handleBucketDoesNotExist(e, bucketId, createAutomatically)
+      case e: AmazonServiceException =>
+        log.error(s"Unable to access specified bucket: ${bucketId}")
+        Failure(e)
     }
   }
 
-  def getBucket(bucketId: S3BucketId): Option[Bucket] = {
-    import scala.collection.JavaConverters._
-    client.listBuckets().asScala.find(_.getName == bucketId.value)
-  }
-
-  def createBucket(bucketId: S3BucketId): Try[S3BucketId] = {
-    try{
-      client.createBucket(bucketId.value)
-      Success(bucketId)
-    } catch {
-      case ex @ (_ : AmazonClientException |
-                 _ : AmazonServiceException) =>
-        Failure(ex)
+  private def handleBucketDoesNotExist(e: AmazonServiceException, bucketId: S3BucketId, createAutomatically: Boolean)(implicit log: Logger): Try[Unit] = {
+    if (createAutomatically) {
+      log.info(s"Bucket ${bucketId.value} doesn't exists, attempting to create it")
+      Try {
+        client.createBucket(bucketId.value)
+      }
+    } else {
+      log.error(s"Bucket ${bucketId.value} doesn't exists - it needs be created and have appropriate privileges before lambda can be uploaded")
+      Failure(e)
     }
   }
+
 
   /**
     * Progress bar code borrowed from
-https://github.com/sbt/sbt-s3/blob/master/src/main/scala/S3Plugin.scala
+    * https://github.com/sbt/sbt-s3/blob/master/src/main/scala/S3Plugin.scala
     */
   private def progressBar(percent:Int) = {
     val b="=================================================="
@@ -86,7 +97,7 @@ https://github.com/sbt/sbt-s3/blob/master/src/main/scala/S3Plugin.scala
     z.mkString
   }
 
-  private def addProgressListener(request: AmazonWebServiceRequest, fileSize: Long, key: String) = {
+  private def addProgressListener(request: AmazonWebServiceRequest, fileSize: Long, key: String)(implicit log: Logger) = {
     request.setGeneralProgressListener(new SyncProgressListener {
       var uploadedBytes = 0L
       val fileName = {
@@ -111,7 +122,7 @@ https://github.com/sbt/sbt-s3/blob/master/src/main/scala/S3Plugin.scala
     })
   }
 
-  def prettyLastMsg(verb:String, objects:Seq[String], preposition:String, bucket:String) =
+  private def prettyLastMsg(verb:String, objects:Seq[String], preposition:String, bucket:String) =
     if (objects.length == 1) s"$verb '${objects.head}' $preposition the S3 bucket '$bucket'."
     else                     s"$verb ${objects.length} objects $preposition the S3 bucket '$bucket'."
 

@@ -1,6 +1,6 @@
 import sbt.Keys.publishTo
 
-val projectVersion          = "0.0.1-SNAPSHOT"
+val projectVersion          = "0.0.2-SNAPSHOT"
 val projectOrg              = "codes.bytes"
 val awsSdkVersion           = "1.11.119"
 val alexaSkillsVersion      = "1.1.2"

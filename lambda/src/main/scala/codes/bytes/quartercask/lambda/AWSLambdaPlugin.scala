@@ -33,133 +33,128 @@ object AWSLambdaPlugin extends AutoPlugin {
     val deployLambda = taskKey[Map[String, LambdaARN]](
       "Create or Update the AWS Lambda project, with any appropriate trigger types & metadata.")
 
-    val s3Bucket = settingKey[Option[String]]("ID of an S3 Bucket to upload the deployment jar to.")
-    val s3KeyPrefix = settingKey[String](
-      "A prefix to the S3 key to which the jar will be " +
-        "uploaded.")
-    val lambdaName = settingKey[Option[String]]("Name of the AWS Lambda to update or create.")
-    val handlerName = settingKey[Option[String]](
-      "Code path to the code for AWS Lambda  to execute, in form of <class::function>.")
-    val roleArn = settingKey[Option[String]](
-      "ARN of the IAM role with which to configure the Lambda function.")
-    val region = settingKey[Option[String]](
-      "Name of the AWS region to setup the Lambda function in.")
-    val awsLambdaTimeout = settingKey[Option[Int]](
-      "In seconds, the Lambda function's timeout length (1-300).")
-    val awsLambdaMemory = settingKey[Option[Int]](
-      "How much memory (in MB) to allocate to execution of the Lambda function (128-1536, " +
-        "multiple of 64).")
+    val s3Bucket =
+      settingKey[String]("ID of an S3 Bucket to upload the deployment jar to. Defaults to organization + project name.")
+
+    val s3KeyPrefix =
+      settingKey[String]("A prefix to the S3 key to which the jar will be uploaded.")
+
+    val lambdaName =
+      settingKey[String]("Name of the AWS Lambda to update or create. Defaults to project name.")
+
+    val roleArn = settingKey[String]("ARN of the IAM role with which to configure the Lambda function.")
+    val region = settingKey[String]("Required. Name of the AWS region to setup the Lambda function in.")
+
+    val awsLambdaTimeout =
+      settingKey[Int]("In seconds, the Lambda function's timeout length (1-300).")
+
+    val awsLambdaMemory = settingKey[Int](
+      "How much memory (in MB) to allocate to execution of the Lambda function (128-1536, multiple of 64)."
+    )
+
+    val createAutomatically = settingKey[Boolean](
+        "Flag indicating if AWS infrastructure should be created automatically. If yes - objects like bucket, " +
+        "lambda definition, api gateway would be automatically crated. Defaults to: false"
+    )
+
+
+    // this should go away - we should be able to figure this out automatically
+    val handlerName =
+      settingKey[String]("Code path to the code for AWS Lambda  to execute, in form of <class::function>.")
+
+    // this should go away - we could detect these automatically
     val lambdaHandlers = settingKey[Seq[(String, String)]](
-      "A sequence of name to lambda function pairs, if you want multiple handlers in one jar.")
+      "A sequence of name to lambda function pairs, if you want multiple handlers in one jar."
+    )
   }
 
   import autoImport._
 
   override def requires = sbtassembly.AssemblyPlugin
 
-
   override lazy val projectSettings = Seq(
     deployLambda := doDeployLambda(
       region = region.value,
       jar = sbtassembly.AssemblyKeys.assembly.value,
+
       s3Bucket = s3Bucket.value,
       s3KeyPrefix = s3KeyPrefix.?.value,
+
       lambdaName = lambdaName.value,
-      handlerName = handlerName.value,
+      handlerName = handlerName.?.value,
       lambdaHandlers = lambdaHandlers.value,
-      roleArn = roleArn.value,
-      timeout = awsLambdaTimeout.value,
-      memory = awsLambdaMemory.value
+      roleArn = roleArn.?.value,
+      timeout = awsLambdaTimeout.?.value,
+      memory = awsLambdaMemory.?.value,
+
+      createAutomatically = createAutomatically.value
     )(streams.value.log),
-    s3Bucket := None,
-    lambdaName := Some(sbt.Keys.name.value),
-    handlerName := None,
-    lambdaHandlers := List.empty[(String, String)],
-    roleArn := None,
-    region := Some("us-east-1"),
-    awsLambdaMemory := None,
-    awsLambdaTimeout := None
+
+    lambdaName := sbt.Keys.name.value,
+    s3Bucket := sbt.Keys.organization.value + "." + lambdaName.value,
+
+    createAutomatically := false,
+
+    lambdaHandlers := List.empty[(String, String)]
   )
 
 
   private def doDeployLambda(
-    region: Option[String],
-    jar: File,
-    s3Bucket: Option[String],
-    s3KeyPrefix: Option[String],
-    lambdaName: Option[String],
-    handlerName: Option[String],
-    lambdaHandlers: Seq[(String, String)],
+    region: String, jar: File,
+    s3Bucket: String, s3KeyPrefix: Option[String],
+    lambdaName: String, handlerName: Option[String], lambdaHandlers: Seq[(String, String)],
     roleArn: Option[String],
-    timeout: Option[Int],
-    memory: Option[Int])(implicit log: Logger): Map[String, LambdaARN] = {
-    val resolvedRegion = resolveRegion(region)
+    timeout: Option[Int], memory: Option[Int], createAutomatically: Boolean)(implicit log: Logger): Map[String, LambdaARN] = {
+    val resolvedRegion = Region(region)
     val awsS3 = new AWSS3(resolvedRegion)
     val awsLambda = new AWSLambdaClient(resolvedRegion)
 
     val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
     val resolvedRoleName = resolveRoleARN(roleArn, resolvedRegion)
-    val resolvedBucketId = resolveBucketId(awsS3, s3Bucket)
+    val resolvedBucketId = S3BucketId(s3Bucket)
     val resolvedS3KeyPrefix = resolveS3KeyPrefix(s3KeyPrefix)
     val resolvedTimeout = resolveTimeout(timeout)
     val resolvedMemory = resolveMemory(memory)
 
-    awsS3.pushJarToS3(jar, resolvedBucketId, resolvedS3KeyPrefix) match {
+    awsS3.pushJarToS3(jar, resolvedBucketId, resolvedS3KeyPrefix, createAutomatically) match {
       case Success(s3Key) =>
         for ((resolvedLambdaName, resolvedHandlerName) <- resolvedLambdaHandlers) yield {
-          awsLambda
-            .deployLambda(
+          deployLambdaFunction(
+              awsLambda,
               LambdaParams(resolvedLambdaName, resolvedHandlerName, resolvedTimeout, resolvedMemory),
               resolvedRoleName,
               S3Params(resolvedBucketId, s3Key)
-            ) match {
-            case Success(Left(createFunctionCodeResult)) =>
-              resolvedLambdaName.value -> LambdaARN(createFunctionCodeResult.getFunctionArn)
-            case Success(Right(updateFunctionCodeResult)) =>
-              resolvedLambdaName.value -> LambdaARN(updateFunctionCodeResult.getFunctionArn)
-            case Failure(exception) =>
-              sys
-                .error(
-                  s"Failed to create lambda function: ${
-                    exception
-                      .getLocalizedMessage
-                  }\n${exception.getStackTraceString}")
-          }
+            )
         }
       case Failure(exception) =>
-        sys
-          .error(
-            s"Error upload jar to S3 lambda: ${exception.getLocalizedMessage}\n${
-              exception
-                .getStackTraceString
-            }")
+        sys.error(s"Error upload jar to S3 lambda: ${exception.getLocalizedMessage}\n${exception.getStackTraceString}")
     }
   }
 
-
-  private def resolveRegion(sbtSettingValueOpt: Option[String]): Region =
-    sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.Region) map Region getOrElse
-      promptUserForRegion()
-
-
-  private def resolveBucketId(awsS3: AWSS3, sbtSettingValueOpt: Option[String])(implicit log: Logger): S3BucketId =
-    sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.BucketId) map S3BucketId getOrElse
-      promptUserForS3BucketId(awsS3)
-
+  private def deployLambdaFunction(awsLambda: AWSLambdaClient, params: LambdaParams, roleName: RoleARN, s3Params: S3Params)
+                                  (implicit log: Logger): (String, LambdaARN) = {
+    awsLambda.deployLambda(params, roleName, s3Params) match {
+      case Success(Left(createFunctionCodeResult)) =>
+        params.name.value -> LambdaARN(createFunctionCodeResult.getFunctionArn)
+      case Success(Right(updateFunctionCodeResult)) =>
+        params.name.value -> LambdaARN(updateFunctionCodeResult.getFunctionArn)
+      case Failure(exception) =>
+        sys.error(s"Failed to create lambda function: ${exception.getMessage}\n${exception.getStackTraceString}")
+    }
+  }
 
   private def resolveS3KeyPrefix(sbtSettingValueOpt: Option[String]): String =
     sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.S3KeyPrefix) getOrElse ""
 
 
   private def resolveLambdaHandlers(
-    lambdaName: Option[String], handlerName: Option[String],
+    lambdaName: String, handlerName: Option[String],
     lambdaHandlers: Seq[(String, String)]): Map[LambdaName, HandlerName] = {
     val lhs = if (lambdaHandlers.nonEmpty) {
       lambdaHandlers.iterator
     }
     else {
       val l = lambdaName
-        .getOrElse(sys.env.getOrElse(EnvironmentVariables.LambdaName, promptUserForFunctionName()))
       val h = handlerName
         .getOrElse(sys.env.getOrElse(EnvironmentVariables.HandlerName, promptUserForHandlerName()))
       Iterator(l -> h)
@@ -179,55 +174,6 @@ object AWSLambdaPlugin extends AutoPlugin {
 
   private def resolveMemory(sbtSettingValueOpt: Option[Int]): Option[Memory] =
     sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.Memory).map(_.toInt) map Memory
-
-
-  private def promptUserForRegion(): Region = {
-    val inputValue = readInput(
-      s"Enter the name of the AWS region to connect to. (You also could have set the environment " +
-        s"variable: ${
-          EnvironmentVariables
-            .Region
-        } or the sbt setting: region)")
-
-    Region(inputValue)
-  }
-
-
-  private def promptUserForS3BucketId(awsS3: AWSS3)(implicit log: Logger): S3BucketId = {
-    val inputValue = readInput(
-      s"Enter the AWS S3 bucket where the lambda jar will be stored. (You also could have set the" +
-        s" environment variable: ${
-          EnvironmentVariables
-            .BucketId
-        } or the sbt setting: s3Bucket)")
-    val bucketId = S3BucketId(inputValue)
-
-    awsS3.getBucket(bucketId) map (_ => bucketId) getOrElse {
-      val createBucket = readInput(s"Bucket $inputValue does not exist. Create it now? (y/n)")
-
-      if (createBucket == "y") {
-        awsS3.createBucket(bucketId) match {
-          case Success(createdBucketId) =>
-            createdBucketId
-          case Failure(th) =>
-            log.error(s"Failed to create S3 bucket: ${th.getMessage}")
-            promptUserForS3BucketId(awsS3)
-        }
-      }
-      else {
-        promptUserForS3BucketId(awsS3)
-      }
-    }
-  }
-
-
-  private def promptUserForFunctionName(): String =
-    readInput(
-      s"Enter the name of the AWS Lambda. (You also could have set the environment variable: ${
-        EnvironmentVariables
-          .LambdaName
-      } or the sbt setting: lambdaName)")
-
 
   private def promptUserForHandlerName(): String =
     readInput(
