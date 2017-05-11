@@ -22,7 +22,9 @@ package codes.bytes.quartercask.lambda
 import codes.bytes.quartercask._
 import codes.bytes.quartercask.s3.AWSS3
 import sbt.Keys.streams
+import sbt.Keys.compile
 import sbt._
+
 
 import scala.util.{Failure, Success}
 
@@ -57,16 +59,18 @@ object AWSLambdaPlugin extends AutoPlugin {
         "lambda definition, api gateway would be automatically crated. Defaults to: false"
     )
 
-
-    // this should go away - we should be able to figure this out automatically
     val handlerName =
-      settingKey[String]("Code path to the code for AWS Lambda  to execute, in form of <class::function>.")
+      settingKey[String]("TODO code path to the code for AWS Lambda  to execute, in form of <class::function>.")
 
-    // this should go away - we could detect these automatically
     val lambdaHandlers = settingKey[Seq[(String, String)]](
       "A sequence of name to lambda function pairs, if you want multiple handlers in one jar."
     )
+
+    val discoverAWSLambdaClasses = taskKey[Seq[String]](
+      "TODO Find a sequence of name to lambda function pairs based on added annotation."
+    )
   }
+
 
   import autoImport._
 
@@ -79,10 +83,7 @@ object AWSLambdaPlugin extends AutoPlugin {
 
       s3Bucket = s3Bucket.value,
       s3KeyPrefix = s3KeyPrefix.?.value,
-
-      lambdaName = lambdaName.value,
-      handlerName = handlerName.?.value,
-      lambdaHandlers = lambdaHandlers.value,
+      lambdaHandlers = lambdaHandlers.?.value.getOrElse(generateLambdas.value),
       roleArn = roleArn.?.value,
       timeout = awsLambdaTimeout.?.value,
       memory = awsLambdaMemory.?.value,
@@ -95,21 +96,34 @@ object AWSLambdaPlugin extends AutoPlugin {
 
     createAutomatically := false,
 
-    lambdaHandlers := List.empty[(String, String)]
+    discoverAWSLambdaClasses := LambdaClassDiscovery.perform(compile.in(Compile).value)
   )
 
+
+  private def generateLambdas = Def.task[Seq[(String, String)]]{
+    handlerName.?.value match {
+      case Some(handler) => Seq(lambdaName.value -> handler)
+      case _ =>
+        val discovered = discoverAWSLambdaClasses.value
+        if (discovered.isEmpty) fail("No annotated class found!")
+        else discovered.map(className => lambdaName.value -> s"$className::")
+    }
+  }
 
   private def doDeployLambda(
     region: String, jar: File,
     s3Bucket: String, s3KeyPrefix: Option[String],
-    lambdaName: String, handlerName: Option[String], lambdaHandlers: Seq[(String, String)],
+    lambdaHandlers: Seq[(String, String)],
     roleArn: Option[String],
     timeout: Option[Int], memory: Option[Int], createAutomatically: Boolean)(implicit log: Logger): Map[String, LambdaARN] = {
     val resolvedRegion = Region(region)
     val awsS3 = new AWSS3(resolvedRegion)
     val awsLambda = new AWSLambdaClient(resolvedRegion)
 
-    val resolvedLambdaHandlers = resolveLambdaHandlers(lambdaName, handlerName, lambdaHandlers)
+    assert(lambdaHandlers.nonEmpty)
+
+    val resolvedLambdaHandlers: Map[LambdaName, HandlerName] =
+      lambdaHandlers.map { case (l, h) => LambdaName(l) -> HandlerName(h) }(collection.breakOut)
     val resolvedRoleName = resolveRoleARN(roleArn, resolvedRegion)
     val resolvedBucketId = S3BucketId(s3Bucket)
     val resolvedS3KeyPrefix = resolveS3KeyPrefix(s3KeyPrefix)
@@ -145,22 +159,6 @@ object AWSLambdaPlugin extends AutoPlugin {
 
   private def resolveS3KeyPrefix(sbtSettingValueOpt: Option[String]): String =
     sbtSettingValueOpt orElse sys.env.get(EnvironmentVariables.S3KeyPrefix) getOrElse ""
-
-
-  private def resolveLambdaHandlers(
-    lambdaName: String, handlerName: Option[String],
-    lambdaHandlers: Seq[(String, String)]): Map[LambdaName, HandlerName] = {
-    val lhs = if (lambdaHandlers.nonEmpty) {
-      lambdaHandlers.iterator
-    }
-    else {
-      val l = lambdaName
-      val h = handlerName
-        .getOrElse(sys.env.getOrElse(EnvironmentVariables.HandlerName, promptUserForHandlerName()))
-      Iterator(l -> h)
-    }
-    lhs.map { case (l, h) => LambdaName(l) -> HandlerName(h) }.toMap
-  }
 
 
   private def resolveRoleARN(sbtSettingValueOpt: Option[String], region: Region): RoleARN =

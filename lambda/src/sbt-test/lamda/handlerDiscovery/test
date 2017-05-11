@@ -1,0 +1,4 @@
+> "testLambdas bar.BarFQN bar.BarImported bar.BarRenamed"
+$ delete Bar.scala
+> testLambdas
+-> deployLambda

@@ -19,6 +19,9 @@ cache:
     - $HOME/.ivy2/cache
     - $HOME/.sbt
 
+script:
+  - sbt test publishLocal lambda/scripted
+
 before_cache:
   # Cleanup the cached directories to avoid unnecessary cache updates
   - find $HOME/.ivy2/cache -name "ivydata-*.properties" -print -delete
